@@ -7,7 +7,8 @@ Implementations of various action heads, which serve as alternatives to VLM sequ
 import math
 import torch
 import torch.nn as nn
-from prismatic.vla.constants import ACTION_DIM, ACTION_TOKEN_BEGIN_IDX, IGNORE_INDEX, NUM_ACTIONS_CHUNK, PROPRIO_DIM, STOP_INDEX, NUM_TOKENS
+import prismatic.vla.constants as C
+from prismatic.vla.constants import ACTION_TOKEN_BEGIN_IDX, IGNORE_INDEX, STOP_INDEX, NUM_TOKENS
 
 
 
@@ -34,7 +35,7 @@ class L1RegressionActionHead(nn.Module):
         self.hidden_dim = hidden_dim
         self.model = MLPResNet(
             num_blocks=24, 
-            input_dim=input_dim*ACTION_DIM, 
+            input_dim=input_dim*C.ACTION_DIM, 
             hidden_dim=hidden_dim, 
             output_dim=action_dim,
             use_pro_version=use_pro_version
@@ -50,20 +51,28 @@ class L1RegressionActionHead(nn.Module):
         batch_size = actions_hidden_states.shape[0]
         device = actions_hidden_states.device
 
-        proprio = proprio.reshape(batch_size, -1).to(torch.bfloat16)  # (bsz, proprio_dim)
-        proprio_features = proprio_projector(proprio)  # (bsz, llm_dim)
-        proprio_features = proprio_features.unsqueeze(dim=1)  # (bsz, 1, llm_dim)
+        # Proprio is optional (e.g. patch_policy sim envs train without proprioception).
+        if proprio is not None and proprio_projector is not None:
+            proprio = proprio.reshape(batch_size, -1).to(torch.bfloat16)  # (bsz, proprio_dim)
+            proprio_features = proprio_projector(proprio)  # (bsz, llm_dim)
+            proprio_features = proprio_features.unsqueeze(dim=1)  # (bsz, 1, llm_dim)
+        else:
+            proprio_features = None
 
-        task_hidden_states = actions_hidden_states[:, :, :self.num_task_tokens, :]
-        actions_hidden_states = actions_hidden_states[:, :, self.num_task_tokens:, :]
+        # The incoming tensor is [vision patch states (NUM_PATCHES) | action query states (NUM_TOKENS)] per layer.
+        # Infer the split from the tensor itself so it is correct for any number of input images
+        # (the previous hard-coded 512 assumed exactly 2 cameras).
+        num_task_tokens = actions_hidden_states.shape[2] - NUM_TOKENS
+        task_hidden_states = actions_hidden_states[:, :, :num_task_tokens, :]
+        actions_hidden_states = actions_hidden_states[:, :, num_task_tokens:, :]
 
         cond_actions_hidden_states = torch.zeros(
-            (batch_size, self.action_dim * NUM_ACTIONS_CHUNK, self.hidden_dim),
+            (batch_size, self.action_dim * C.NUM_ACTIONS_CHUNK, self.hidden_dim),
             device=device, dtype=actions_hidden_states.dtype
         ).detach()  
 
         rearranged_actions_hidden_states = cond_actions_hidden_states.reshape(
-            batch_size, NUM_ACTIONS_CHUNK, -1
+            batch_size, C.NUM_ACTIONS_CHUNK, -1
         )  # (batch, chunk_len, action_dim * hidden_dim)
 
         if phase == "Training":
@@ -343,8 +352,8 @@ class MLPResNetBlock_Pro(nn.Module):
         g = self.gating_factor
         ratio_g = torch.tanh(g)
 
-        # concat h_a and p
-        h_adapter = torch.cat((h_a, p),dim=1)
+        # concat h_a and p (p may be None when no proprio is used)
+        h_adapter = torch.cat((h_a, p), dim=1) if p is not None else h_a
 
         h_task = h_t
         B, T, C = x.shape

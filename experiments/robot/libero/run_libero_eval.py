@@ -20,6 +20,7 @@ import tqdm
 from libero.libero import benchmark
 
 import wandb
+import prismatic.vla.constants as C
 
 # Append current directory so that interpreter can find experiments.robot
 sys.path.append("../..")
@@ -47,7 +48,7 @@ from experiments.robot.robot_utils import (
     normalize_gripper_action,
     set_seed_everywhere,
 )
-from prismatic.vla.constants import NUM_ACTIONS_CHUNK
+# (constants imported as C)
 
 
 # Define task suite constants
@@ -304,9 +305,9 @@ def run_episode(
         obs = env.get_observation()
 
     # Initialize action queue
-    if cfg.num_open_loop_steps != NUM_ACTIONS_CHUNK:
-        print(f"WARNING: cfg.num_open_loop_steps ({cfg.num_open_loop_steps}) does not match the NUM_ACTIONS_CHUNK "
-               "{NUM_ACTIONS_CHUNK} constant defined in prismatic.vla.constants! For best performance (in terms of "
+    if cfg.num_open_loop_steps != C.NUM_ACTIONS_CHUNK:
+        print(f"WARNING: cfg.num_open_loop_steps ({cfg.num_open_loop_steps}) does not match the C.NUM_ACTIONS_CHUNK "
+               "{C.NUM_ACTIONS_CHUNK} constant defined in prismatic.vla.constants! For best performance (in terms of "
                "both speed and success rate), we recommend executing the full action chunk.")
     action_queue = deque(maxlen=cfg.num_open_loop_steps)
 

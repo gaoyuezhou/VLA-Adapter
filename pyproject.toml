@@ -58,6 +58,8 @@ dependencies = [
     "uvicorn",
     "fastapi",
     "json-numpy",
+    "hydra-core>=1.2.0",
+    "omegaconf>=2.2.0",
 ]
 
 [project.optional-dependencies]

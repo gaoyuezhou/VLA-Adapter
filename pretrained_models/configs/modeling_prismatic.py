@@ -24,12 +24,10 @@ from prismatic.training.train_utils import (
     get_current_action_mask,
     get_next_actions_mask,
 )
+import prismatic.vla.constants as C
 from prismatic.vla.constants import (
-    ACTION_DIM,
-    ACTION_PROPRIO_NORMALIZATION_TYPE,
     ACTION_TOKEN_BEGIN_IDX,
     IGNORE_INDEX,
-    NUM_ACTIONS_CHUNK,
     STOP_INDEX,
     NormalizationType,
     NUM_TOKENS
@@ -747,7 +745,7 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
 
     def _prepare_input_for_action_prediction(self, input_ids, attention_mask):
         """Prepares input for action prediction by adding necessary tokens"""
-        # Add (ACTION_DIM * NUM_ACTIONS_CHUNK) placeholder tokens to input_ids to simulate action tokens
+        # Add (C.ACTION_DIM * C.NUM_ACTIONS_CHUNK) placeholder tokens to input_ids to simulate action tokens
         placeholder_action_token_ids = (
             torch.ones((input_ids.shape[0], NUM_TOKENS)).to(input_ids.device).to(input_ids.dtype)
         )
@@ -787,10 +785,10 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
         """Unnormalize actions using dataset statistics"""
         action_norm_stats = self.get_action_stats(unnorm_key)
 
-        if ACTION_PROPRIO_NORMALIZATION_TYPE == NormalizationType.BOUNDS:
+        if C.ACTION_PROPRIO_NORMALIZATION_TYPE == NormalizationType.BOUNDS:
             mask = action_norm_stats.get("mask", np.ones_like(action_norm_stats["min"], dtype=bool))
             action_high, action_low = np.array(action_norm_stats["max"]), np.array(action_norm_stats["min"])
-        elif ACTION_PROPRIO_NORMALIZATION_TYPE == NormalizationType.BOUNDS_Q99:
+        elif C.ACTION_PROPRIO_NORMALIZATION_TYPE == NormalizationType.BOUNDS_Q99:
             mask = action_norm_stats.get("mask", np.ones_like(action_norm_stats["q01"], dtype=bool))
             action_high, action_low = np.array(action_norm_stats["q99"]), np.array(action_norm_stats["q01"])
         else:
@@ -868,14 +866,14 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
             normalized_actions = action_head.predict_action(multi_layer_hidden_states,
                                                 proprio=proprio,
                                                 proprio_projector=proprio_projector)
-            normalized_actions = normalized_actions.reshape(NUM_ACTIONS_CHUNK, ACTION_DIM)
+            normalized_actions = normalized_actions.reshape(C.NUM_ACTIONS_CHUNK, C.ACTION_DIM)
             normalized_actions = normalized_actions.float().cpu().detach().numpy()
         else:
             # Discrete token-based prediction
             predicted_action_token_ids = (
                 language_model_output.logits[
                     :,
-                    NUM_PATCHES + NUM_PROMPT_TOKENS : NUM_PATCHES + NUM_PROMPT_TOKENS + ACTION_DIM * NUM_ACTIONS_CHUNK,
+                    NUM_PATCHES + NUM_PROMPT_TOKENS : NUM_PATCHES + NUM_PROMPT_TOKENS + C.ACTION_DIM * C.NUM_ACTIONS_CHUNK,
                 ]
                 .argmax(dim=2)
                 .cpu()
@@ -884,7 +882,7 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
             discretized_actions = self.vocab_size - predicted_action_token_ids
             discretized_actions = np.clip(discretized_actions - 1, a_min=0, a_max=self.bin_centers.shape[0] - 1)
             normalized_actions = self.bin_centers[discretized_actions]
-            normalized_actions = normalized_actions.reshape(NUM_ACTIONS_CHUNK, ACTION_DIM)
+            normalized_actions = normalized_actions.reshape(C.NUM_ACTIONS_CHUNK, C.ACTION_DIM)
 
         return normalized_actions, actions_hidden_states
 
@@ -993,7 +991,8 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
     def get_action_dim(self, unnorm_key: Optional[str] = None) -> int:
         """Get the dimensionality of the policy's action space."""
         unnorm_key = self._check_unnorm_key(self.norm_stats, unnorm_key)
-        return len(self.norm_stats[unnorm_key]["action"]["min"])
+        action_stats = self.norm_stats[unnorm_key]["action"]
+        return len(action_stats.get("q01", action_stats.get("min")))
 
     def get_action_stats(self, unnorm_key: Optional[str] = None) -> Dict[str, Any]:
         """Get all the logged statistics for the given dataset."""

@@ -10,7 +10,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from prismatic.overwatch import initialize_overwatch
-from prismatic.vla.constants import ACTION_DIM, ACTION_PROPRIO_NORMALIZATION_TYPE, ACTION_TOKEN_BEGIN_IDX, IGNORE_INDEX, NUM_ACTIONS_CHUNK, PROPRIO_DIM, STOP_INDEX
+import prismatic.vla.constants as C
+from prismatic.vla.constants import ACTION_TOKEN_BEGIN_IDX, IGNORE_INDEX, STOP_INDEX
 from prismatic.vla.datasets.rlds.oxe.configs import OXE_DATASET_CONFIGS, ActionEncoding
 from prismatic.vla.datasets.rlds.oxe.transforms import OXE_STANDARDIZATION_TRANSFORMS
 
@@ -25,7 +26,7 @@ def make_oxe_dataset_kwargs(
     load_depth: bool = False,
     load_proprio: bool = True,
     load_language: bool = True,
-    action_proprio_normalization_type = ACTION_PROPRIO_NORMALIZATION_TYPE,
+    action_proprio_normalization_type = C.ACTION_PROPRIO_NORMALIZATION_TYPE,
 ) -> Dict[str, Any]:
     """Generates config (kwargs) for given dataset from Open-X Embodiment."""
     dataset_kwargs = deepcopy(OXE_DATASET_CONFIGS[dataset_name])
@@ -86,7 +87,7 @@ def get_oxe_dataset_kwargs_and_weights(
     load_depth: bool = False,
     load_proprio: bool = True,
     load_language: bool = True,
-    action_proprio_normalization_type = ACTION_PROPRIO_NORMALIZATION_TYPE,
+    action_proprio_normalization_type = C.ACTION_PROPRIO_NORMALIZATION_TYPE,
 ) -> Tuple[Dict[str, Any], List[float]]:
     """
     Generates dataset kwargs for a given dataset mix from the Open X-Embodiment dataset. The returned kwargs

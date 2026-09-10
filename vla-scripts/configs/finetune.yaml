@@ -1,0 +1,60 @@
+defaults:
+  - _self_
+  - dataset: pusht
+  - env_vars: env_vars
+
+# Model (VLA-Adapter: Prismatic Qwen2.5-0.5B VLM + bridge-attention action head)
+config_file_path: "pretrained_models/configs"          # HF config + tokenizer used to build the VLA skeleton
+vlm_path: ${env_vars.vlm_path}                          # Prismatic VLM weights (prism-qwen25-extra-dinosiglip-224px-0_5b)
+use_minivlm: true
+resum_vla_path: ""                                      # checkpoint dir when resume=true
+use_l1_regression: true
+use_diffusion: false
+num_diffusion_steps: 50
+use_film: false
+num_images_in_input: 1                                  # overridden by dataset.num_views when present
+use_proprio: false                                      # patch_policy baselines: no proprio (dataset.proprio_dim = 0)
+phase1_path: "None"
+use_pro_version: true
+phase: "Training"
+
+# Training (VLA-Adapter LIBERO recipe: lr 2e-4, LoRA r64, image aug)
+seed: 42
+batch_size: 8
+learning_rate: 2e-4
+lr_warmup_steps: 0
+num_steps_before_decay: 100000
+grad_accumulation_steps: 1
+max_steps: 100000
+image_aug: true
+save_freq: 5000
+save_latest_checkpoint_only: false
+resume: false
+resume_step: null
+use_val_set: false
+val_freq: 10000
+val_time_limit: 180
+diffusion_sample_freq: 50
+
+# LoRA
+use_lora: true
+lora_rank: 64
+lora_dropout: 0.0
+merge_lora_during_training: true
+use_fz: false
+
+# Logging
+run_root_dir: ${env_vars.run_root_dir}
+wandb_entity: ${env_vars.wandb_entity}
+wandb_project: ${env_vars.wandb_project}
+wandb_mode: "online"
+wandb_log_freq: 10
+run_id_note: null
+run_id_prefix: "vla-adapter"
+run_id_override: null
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: ${env_vars.run_root_dir}/hydra/${now:%Y-%m-%d}/${now:%H-%M-%S}

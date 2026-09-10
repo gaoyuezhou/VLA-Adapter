@@ -27,10 +27,7 @@ from prismatic.extern.hf.processing_prismatic import PrismaticImageProcessor, Pr
 from prismatic.models.action_heads import L1RegressionActionHead
 from prismatic.models.film_vit_wrapper import FiLMedPrismaticVisionBackbone
 from prismatic.models.projectors import NoisyActionProjector, ProprioProjector
-from prismatic.vla.constants import (
-    ACTION_DIM,
-    ACTION_PROPRIO_NORMALIZATION_TYPE,
-)
+import prismatic.vla.constants as C
 from prismatic.vla.datasets.rlds.utils.data_utils import NormalizationType
 
 # Initialize important constants
@@ -76,24 +73,33 @@ def update_auto_map(pretrained_checkpoint: str) -> None:
         print(f"Warning: No config.json found at {config_path}")
         return
 
+    desired_auto_map = {
+        "AutoConfig": "configuration_prismatic.OpenVLAConfig",
+        "AutoModelForVision2Seq": "modeling_prismatic.OpenVLAForActionPrediction",
+    }
+
+    # Read the config
+    with open(config_path, "r") as f:
+        config = json.load(f)
+
+    # No-op if already correct. Several jobs may start from the same shared config dir at the same time; an
+    # unconditional rewrite lets one job read the file while another has it truncated.
+    if config.get("auto_map") == desired_auto_map:
+        return
+
     # Create timestamped backup
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_path = os.path.join(pretrained_checkpoint, f"config.json.back.{timestamp}")
     shutil.copy2(config_path, backup_path)
     print(f"Created backup of original config at: {os.path.abspath(backup_path)}")
 
-    # Read and update the config
-    with open(config_path, "r") as f:
-        config = json.load(f)
+    config["auto_map"] = desired_auto_map
 
-    config["auto_map"] = {
-        "AutoConfig": "configuration_prismatic.OpenVLAConfig",
-        "AutoModelForVision2Seq": "modeling_prismatic.OpenVLAForActionPrediction",
-    }
-
-    # Write back the updated config
-    with open(config_path, "w") as f:
+    # Write back atomically (temp file + rename) so concurrent readers never see a partial file
+    tmp_path = f"{config_path}.tmp.{os.getpid()}"
+    with open(tmp_path, "w") as f:
         json.dump(config, f, indent=2)
+    os.replace(tmp_path, config_path)
 
     print(f"Updated config.json at: {os.path.abspath(config_path)}")
     print("Changes made:")
@@ -151,16 +157,20 @@ def _handle_file_sync(curr_filepath: str, checkpoint_filepath: str, file_type: s
             shutil.copy2(checkpoint_filepath, backup_path)
             print(f"Created backup of original checkpoint file at: {os.path.abspath(backup_path)}")
 
-            # Copy current version to checkpoint directory
-            shutil.copy2(curr_filepath, checkpoint_filepath)
+            # Copy current version to checkpoint directory (atomically: temp + rename)
+            tmp_path = f"{checkpoint_filepath}.tmp.{os.getpid()}"
+            shutil.copy2(curr_filepath, tmp_path)
+            os.replace(tmp_path, checkpoint_filepath)
             print(f"Copied current version to checkpoint at: {os.path.abspath(checkpoint_filepath)}")
             print(
                 f"Changes complete. The checkpoint will now use the current version of {file_type}"
                 "\n------------------------------------------------------------------------------------------------\n"
             )
     else:
-        # If file doesn't exist in checkpoint directory, copy it
-        shutil.copy2(curr_filepath, checkpoint_filepath)
+        # If file doesn't exist in checkpoint directory, copy it (atomically: temp + rename)
+        tmp_path = f"{checkpoint_filepath}.tmp.{os.getpid()}"
+        shutil.copy2(curr_filepath, tmp_path)
+        os.replace(tmp_path, checkpoint_filepath)
         print(
             "\n------------------------------------------------------------------------------------------------\n"
             f"No {file_type} found in checkpoint directory.\n"
@@ -347,8 +357,8 @@ def _apply_film_to_vla(vla: torch.nn.Module, cfg: Any) -> torch.nn.Module:
 
     # Apply LoRA configuration
     lora_config = LoraConfig(
-        r=32,
-        lora_alpha=16,
+        r=cfg.lora_rank,
+        lora_alpha=min(cfg.lora_rank, 16),
         lora_dropout=0.0,
         target_modules="all-linear",
         init_lora_weights="gaussian",
@@ -510,7 +520,7 @@ def get_action_head(cfg: Any, llm_dim: int) -> Union[L1RegressionActionHead]:
         action_head = L1RegressionActionHead(
             input_dim=llm_dim, 
             hidden_dim=llm_dim, 
-            action_dim=ACTION_DIM,
+            action_dim=C.ACTION_DIM,
             use_pro_version=cfg.use_pro_version,
         )
 
@@ -684,10 +694,10 @@ def normalize_proprio(proprio: np.ndarray, norm_stats: Dict[str, Any]) -> np.nda
     Returns:
         np.ndarray: Normalized proprioception data
     """
-    if ACTION_PROPRIO_NORMALIZATION_TYPE == NormalizationType.BOUNDS:
+    if C.ACTION_PROPRIO_NORMALIZATION_TYPE == NormalizationType.BOUNDS:
         mask = norm_stats.get("mask", np.ones_like(norm_stats["min"], dtype=bool))
         proprio_high, proprio_low = np.array(norm_stats["max"]), np.array(norm_stats["min"])
-    elif ACTION_PROPRIO_NORMALIZATION_TYPE == NormalizationType.BOUNDS_Q99:
+    elif C.ACTION_PROPRIO_NORMALIZATION_TYPE == NormalizationType.BOUNDS_Q99:
         mask = norm_stats.get("mask", np.ones_like(norm_stats["q01"], dtype=bool))
         proprio_high, proprio_low = np.array(norm_stats["q99"]), np.array(norm_stats["q01"])
     else:

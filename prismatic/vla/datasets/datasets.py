@@ -20,7 +20,8 @@ from prismatic.models.backbones.llm.prompting import PromptBuilder, QwenPromptBu
 from prismatic.models.backbones.vision import ImageTransform
 from prismatic.util.data_utils import tree_map
 from prismatic.vla.action_tokenizer import ActionTokenizer
-from prismatic.vla.constants import ACTION_DIM, ACTION_PROPRIO_NORMALIZATION_TYPE, ACTION_TOKEN_BEGIN_IDX, IGNORE_INDEX, NUM_ACTIONS_CHUNK, PROPRIO_DIM, STOP_INDEX, NUM_TOKENS
+import prismatic.vla.constants as C
+from prismatic.vla.constants import ACTION_TOKEN_BEGIN_IDX, IGNORE_INDEX, STOP_INDEX, NUM_TOKENS
 from prismatic.vla.datasets.rlds import make_interleaved_dataset, make_single_dataset
 from prismatic.vla.datasets.rlds.oxe import OXE_NAMED_MIXTURES, get_oxe_dataset_kwargs_and_weights
 
@@ -178,12 +179,12 @@ class RLDSDataset(IterableDataset):
             load_depth=False,
             load_proprio=True,
             load_language=True,
-            action_proprio_normalization_type=ACTION_PROPRIO_NORMALIZATION_TYPE,
+            action_proprio_normalization_type=C.ACTION_PROPRIO_NORMALIZATION_TYPE,
         )
         rlds_config = dict(
             traj_transform_kwargs=dict(
                 window_size=1,                                      # If we wanted to feed / predict more than one step
-                future_action_window_size=NUM_ACTIONS_CHUNK-1,      # For action chunking
+                future_action_window_size=C.NUM_ACTIONS_CHUNK-1,      # For action chunking
                 skip_unlabeled=True,                                # Skip trajectories without language labels
                 goal_relabeling_strategy="uniform",                 # Goals are currently unused
             ),

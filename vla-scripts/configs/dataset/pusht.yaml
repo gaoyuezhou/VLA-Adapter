@@ -1,0 +1,20 @@
+type: patch_policy
+dataset_class: pusht.PushTDataset
+data_directory: "${env_vars.datasets.pusht}"
+language_instruction: "push the T-shaped block to the target"
+
+# Robot constants
+action_dim: 2
+num_actions_chunk: 5
+proprio_dim: 0
+normalization_type: "bounds_q99"
+num_views: 1
+
+# Data slicing
+window_size: 5
+train_fraction: 0.95
+subset_fraction: null
+
+# Dataset-specific args
+relative: false
+prefetch: true

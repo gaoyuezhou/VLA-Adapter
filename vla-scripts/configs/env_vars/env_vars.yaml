@@ -1,0 +1,14 @@
+# Machine-specific paths. Edit for your setup.
+dataset_root: /mnt/vast/home/gaoyue/datasets/patch_policy_datasets
+datasets:
+  block_push: ${env_vars.dataset_root}/block_push_dataset
+  cube: ${env_vars.dataset_root}/cube_dataset
+  libero: ${env_vars.dataset_root}/libero_dataset
+  pusht: ${env_vars.dataset_root}/pusht_dataset
+# RLDS (TFDS) root for the original VLA-Adapter LIBERO path, e.g. <rlds_root>/libero_goal_no_noops/1.0.0
+rlds_root: /mnt/vast/home/gaoyue/datasets/libero_rlds
+# Prismatic VLM weights
+vlm_path: /mnt/vast/home/gaoyue/ai_models/Stanford-ILIAD/prism-qwen25-extra-dinosiglip-224px-0_5b
+run_root_dir: /mnt/vast/home/gaoyue/exps/vla_adapter/outputs
+wandb_entity: gaoyuezhou
+wandb_project: "vla-adapter-patch-policy"

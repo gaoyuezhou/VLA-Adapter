@@ -34,7 +34,8 @@ from prismatic.util.data_utils import PaddedCollatorForActionPrediction, PaddedC
 from prismatic.vla.action_tokenizer import ActionTokenizer
 
 # HuggingFace Default / LLaMa-2 IGNORE_INDEX (for labels)
-from prismatic.vla.constants import ACTION_DIM, ACTION_TOKEN_BEGIN_IDX, NUM_ACTIONS_CHUNK, IGNORE_INDEX
+import prismatic.vla.constants as C
+from prismatic.vla.constants import ACTION_TOKEN_BEGIN_IDX, IGNORE_INDEX
 NEWLINE_INDEX = 13  # '\n'
 STOP_INDEX = 2  # '</s>'
 
@@ -320,7 +321,7 @@ class TrainingStrategy(ABC):
                 # === Compute Current Action Token Accuracy & L1 Loss ===
                 #######################################################################
 
-                # Get current action mask: Target the first ACTION_DIM non-ignore tokens
+                # Get current action mask: Target the first C.ACTION_DIM non-ignore tokens
                 current_action_mask = get_current_action_mask(ground_truth_token_ids)
 
                 # Compute Accuracy
@@ -333,7 +334,7 @@ class TrainingStrategy(ABC):
                 # === Compute Next Actions Token Accuracy & L1 Loss ===
                 #######################################################################
 
-                # Get next actions mask: Target all tokens after the first ACTION_DIM non-ignore tokens (excluding the last token, which is the stop token)
+                # Get next actions mask: Target all tokens after the first C.ACTION_DIM non-ignore tokens (excluding the last token, which is the stop token)
                 next_actions_mask = get_next_actions_mask(ground_truth_token_ids)
 
                 # Compute Accuracy

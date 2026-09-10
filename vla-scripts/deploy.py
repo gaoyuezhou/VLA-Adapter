@@ -36,7 +36,8 @@ from experiments.robot.openvla_utils import (
 from experiments.robot.robot_utils import (
     get_image_resize_size,
 )
-from prismatic.vla.constants import ACTION_DIM, ACTION_TOKEN_BEGIN_IDX, IGNORE_INDEX, NUM_ACTIONS_CHUNK, PROPRIO_DIM, STOP_INDEX
+import prismatic.vla.constants as C
+from prismatic.vla.constants import ACTION_TOKEN_BEGIN_IDX, IGNORE_INDEX, STOP_INDEX
 
 
 def get_openvla_prompt(instruction: str, openvla_path: Union[str, Path]) -> str:
@@ -57,7 +58,7 @@ class OpenVLAServer:
         # Load proprio projector
         self.proprio_projector = None
         if cfg.use_proprio:
-            self.proprio_projector = get_proprio_projector(cfg, self.vla.llm_dim, PROPRIO_DIM)
+            self.proprio_projector = get_proprio_projector(cfg, self.vla.llm_dim, C.PROPRIO_DIM)
 
         # Load continuous action head
         self.action_head = None
@@ -130,6 +131,8 @@ class DeployConfig:
 
     center_crop: bool = True                         # Center crop? (if trained w/ random crop image aug)
     num_open_loop_steps: int = 25                    # Number of actions to execute open-loop before requerying policy
+
+    lora_rank: int = 32                              # Rank of LoRA weight matrix (MAKE SURE THIS MATCHES TRAINING!)
 
     unnorm_key: Union[str, Path] = ""                # Action un-normalization key
     use_relative_actions: bool = False               # Whether to use relative actions (delta joint angles)

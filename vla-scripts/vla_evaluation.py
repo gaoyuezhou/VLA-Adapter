@@ -8,10 +8,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple, Union
 import tensorflow as tf
 from calvin_agent.models.calvin_base_model import CalvinBaseModel
-from prismatic.vla.constants import (
-    ACTION_DIM,
-    ACTION_PROPRIO_NORMALIZATION_TYPE,
-)
+import prismatic.vla.constants as C
 from prismatic.vla.datasets.rlds.utils.data_utils import NormalizationType
 
 
@@ -33,10 +30,10 @@ def normalize_proprio(proprio: np.ndarray, norm_stats: Dict[str, Any]) -> np.nda
     Returns:
         np.ndarray: Normalized proprioception data
     """
-    if ACTION_PROPRIO_NORMALIZATION_TYPE == NormalizationType.BOUNDS:
+    if C.ACTION_PROPRIO_NORMALIZATION_TYPE == NormalizationType.BOUNDS:
         mask = norm_stats.get("mask", np.ones_like(norm_stats["min"], dtype=bool))
         proprio_high, proprio_low = np.array(norm_stats["max"]), np.array(norm_stats["min"])
-    elif ACTION_PROPRIO_NORMALIZATION_TYPE == NormalizationType.BOUNDS_Q99:
+    elif C.ACTION_PROPRIO_NORMALIZATION_TYPE == NormalizationType.BOUNDS_Q99:
         mask = norm_stats.get("mask", np.ones_like(norm_stats["q01"], dtype=bool))
         proprio_high, proprio_low = np.array(norm_stats["q99"]), np.array(norm_stats["q01"])
     else:

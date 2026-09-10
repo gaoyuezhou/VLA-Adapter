@@ -1,0 +1,10 @@
+env_name: libero_goal
+action_dim: 7
+num_actions_chunk: 8
+proprio_dim: 0
+normalization_type: "bounds_q99"
+num_images_in_input: 2
+num_open_loop_steps: 8
+max_steps: 300
+num_steps_wait: 10
+use_proprio: false

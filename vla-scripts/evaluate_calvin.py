@@ -20,10 +20,7 @@ from accelerate.utils import InitProcessGroupKwargs
 from calvin_agent.models.calvin_base_model import CalvinBaseModel
 from prismatic.models.projectors import NoisyActionProjector, ProprioProjector
 from prismatic.models.action_heads import L1RegressionActionHead
-from prismatic.vla.constants import (
-    ACTION_DIM,
-    ACTION_PROPRIO_NORMALIZATION_TYPE,
-)
+import prismatic.vla.constants as C
 from peft import LoraConfig, get_peft_model
 from transformers import AutoModelForVision2Seq, AutoProcessor, BitsAndBytesConfig
 from transformers import AutoConfig, AutoImageProcessor

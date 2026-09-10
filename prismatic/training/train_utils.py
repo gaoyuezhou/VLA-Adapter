@@ -2,7 +2,8 @@
 
 import torch
 
-from prismatic.vla.constants import ACTION_DIM, ACTION_TOKEN_BEGIN_IDX, IGNORE_INDEX
+import prismatic.vla.constants as C
+from prismatic.vla.constants import ACTION_TOKEN_BEGIN_IDX, IGNORE_INDEX
 
 
 def get_current_action_mask(token_ids):
@@ -14,7 +15,7 @@ def get_current_action_mask(token_ids):
     cumsum = torch.cumsum(newline_positions, dim=1)
 
     # Create the mask
-    mask = (1 <= cumsum) & (cumsum <= ACTION_DIM)
+    mask = (1 <= cumsum) & (cumsum <= C.ACTION_DIM)
 
     # Extract the action part only
     action_tokens_only_mask = token_ids > ACTION_TOKEN_BEGIN_IDX
@@ -32,7 +33,7 @@ def get_next_actions_mask(token_ids):
     cumsum = torch.cumsum(newline_positions, dim=1)
 
     # Create the mask
-    mask = cumsum > ACTION_DIM
+    mask = cumsum > C.ACTION_DIM
 
     # Extract the action part only
     action_tokens_only_mask = token_ids > ACTION_TOKEN_BEGIN_IDX

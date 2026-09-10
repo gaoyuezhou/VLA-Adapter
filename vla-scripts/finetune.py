@@ -7,22 +7,22 @@ Fine-tunes Qwen2.5-0.5B via LoRA.
 import os
 import time
 from collections import deque
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional, Tuple, Type
 import torch.nn.functional as F
-import draccus
+import hydra
 import torch
 import torch.distributed as dist
 import torch.nn as nn
 import tqdm
 from accelerate import PartialState
 from huggingface_hub import HfApi, snapshot_download
+from omegaconf import DictConfig, OmegaConf
 from peft import LoraConfig, PeftModel, get_peft_model
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import MultiStepLR, CosineAnnealingLR
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, DistributedSampler
 from transformers import AutoConfig, AutoImageProcessor, AutoModelForVision2Seq, AutoProcessor
 from transformers.modeling_outputs import CausalLMOutputWithPast
 import wandb
@@ -45,17 +45,14 @@ from prismatic.training.train_utils import (
     get_current_action_mask,
     get_next_actions_mask
 )
+from prismatic.util import set_global_seed
 from prismatic.util.data_utils import PaddedCollatorForActionPrediction
 from prismatic.vla.action_tokenizer import ActionTokenizer
-from prismatic.vla.constants import (
-    ACTION_DIM,
-    ACTION_PROPRIO_NORMALIZATION_TYPE,
-    NUM_ACTIONS_CHUNK,
-    PROPRIO_DIM,
-    NUM_TOKENS
-)
-from prismatic.vla.datasets import RLDSDataset, RLDSBatchTransform
+import prismatic.vla.constants as C
+from prismatic.vla.constants import set_constants, NUM_TOKENS
+from prismatic.vla.datasets import RLDSDataset, RLDSBatchTransform, PatchPolicyVLADataset, InfiniteDataLoader
 from prismatic.vla.datasets.rlds.utils.data_utils import save_dataset_statistics
+from prismatic.vla.datasets.trajectory import get_train_val_sliced
 from prismatic.models import load, load_vla
 
 
@@ -63,69 +60,8 @@ from prismatic.models import load, load_vla
 # Sane Defaults
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-@dataclass
-class FinetuneConfig:
-    # fmt: off
-    config_file_path: str = "openvla/openvla-7b"     # Path to necessary config files of LA-Adapter
-    vlm_path: str = "openvla/openvla-7b"             # Path to OpenVLA model (on HuggingFace Hub or stored locally)
-    use_minivlm: bool = False                        # 
-    resum_vla_path: str = "openvla/openvla-7b"       # Path to OpenVLA model (on HuggingFace Hub or stored locally)
-
-    # Dataset
-    data_root_dir: Path = Path("datasets/rlds")      # Directory containing RLDS datasets
-    dataset_name: str = "aloha_scoop_x_into_bowl"    # Name of fine-tuning dataset (e.g., `aloha_scoop_x_into_bowl`)
-    run_root_dir: Path = Path("runs")                # Path to directory to store logs & checkpoints
-    shuffle_buffer_size: int = 100_000               # Dataloader shuffle buffer size (can reduce if OOM errors occur)
-
-    # Algorithm and architecture
-    use_l1_regression: bool = True                   # If True, trains continuous action head with L1 regression objective
-    use_diffusion: bool = False                      # If True, trains continuous action head with diffusion modeling objective (DDIM)
-    num_diffusion_steps: int = 50                    # (When `diffusion==True`) Number of diffusion steps for training 
-    use_film: bool = False                           # If True, uses FiLM to infuse language inputs into visual features
-    num_images_in_input: int = 1                     # Number of images in the VLA input (default: 1)
-    use_proprio: bool = False                        # If True, includes robot proprioceptive state in input
-    phase1_path: str = "None"
-
-    # Training configuration
-    batch_size: int = 8                              # Batch size per device (total batch size = batch_size * num GPUs)
-    learning_rate: float = 5e-4                      # Learning rate
-    lr_warmup_steps: int = 0.1                       # Number of steps to warm up learning rate (from 10% to 100%)
-    num_steps_before_decay: int = 100000             # Number of steps before LR decays by 10x
-    grad_accumulation_steps: int = 1                 # Number of gradient accumulation steps
-    max_steps: int = 200000                          # Max number of training steps
-    use_val_set: bool = False                        # If True, uses validation set and log validation metrics
-    val_freq: int = 10_000                           # (When `use_val_set==True`) Validation set logging frequency in steps
-    val_time_limit: int = 180                        # (When `use_val_set==True`) Time limit for computing validation metrics
-    save_freq: int = 10_000                          # Checkpoint saving frequency in steps
-    save_latest_checkpoint_only: bool = False        # If True, saves only 1 checkpoint, overwriting latest checkpoint
-                                                     #   (If False, saves all checkpoints)
-    resume: bool = False                             # If True, resumes from checkpoint
-    resume_step: Optional[int] = None                # (When `resume==True`) Step number that we are resuming from
-    image_aug: bool = True                           # If True, trains with image augmentations (HIGHLY RECOMMENDED)
-    diffusion_sample_freq: int = 50                  # (When `use_diffusion==True`) Frequency for sampling in steps
-
-    # LoRA
-    use_lora: bool = False                           # If True, uses LoRA fine-tuning
-    lora_rank: int = 32                              # Rank of LoRA weight matrix
-    lora_dropout: float = 0.0                        # Dropout applied to LoRA weights
-    merge_lora_during_training: bool = False         # If True, merges LoRA weights and saves result during training
-                                                     #   Note: Merging can be very slow on some machines. If so, set to
-                                                     #         False and merge final checkpoint offline!
-
-    # Full Finetune
-    use_fz: bool = False                             # If True, uses LoRA fine-tuning
-
-    # Logging
-    wandb_entity: str = "your-wandb-entity"          # Name of WandB entity
-    wandb_project: str = "your-wandb-project"        # Name of WandB project
-    run_id_note: Optional[str] = None                # Extra note to add to end of run ID for logging
-    run_id_override: Optional[str] = None            # Optional string to override the run ID with
-    wandb_log_freq: int = 10                         # WandB logging frequency in steps
-
-    # revision version
-    use_pro_version: bool = True                             # the version number
-    phase: str = "Training"
-    # fmt: on
+# FinetuneConfig is defined in vla-scripts/configs/finetune.yaml (Hydra). Per-dataset settings live in
+# vla-scripts/configs/dataset/*.yaml and are exposed as `cfg.dataset`.
 
 
 
@@ -160,7 +96,7 @@ def get_run_id(cfg) -> str:
     Generates or retrieves an identifier string for an experiment run.
 
     Args:
-        cfg (FinetuneConfig): Training configuration.
+        cfg (DictConfig): Training configuration.
 
     Returns:
         str: Experiment run ID.
@@ -169,14 +105,15 @@ def get_run_id(cfg) -> str:
         # Override the run ID with the user-provided ID
         run_id = cfg.run_id_override
     elif cfg.resume:
-        # Override run ID with the previous resumed run's ID
-        run_id = cfg.config_file_path.split("/")[-1]
+        # Override run ID with the previous resumed run's ID (checkpoint dir name minus the --<step>_chkpt suffix)
+        run_id = cfg.resum_vla_path.rstrip("/").split("/")[-1]
         # Remove the "--XXX_chkpt" suffix from the run ID if it exists
         if "chkpt" in run_id.split("--")[-1]:
             run_id = "--".join(run_id.split("--")[:-1])
     else:
+        dataset_label = cfg.dataset.get("dataset_name", cfg.dataset.get("dataset_class", "unknown"))
         run_id = (
-            f"{cfg.config_file_path.split('/')[-1]}+{cfg.dataset_name}"
+            f"{cfg.get('run_id_prefix', 'vla-adapter')}+{dataset_label}"
             f"+b{cfg.batch_size * cfg.grad_accumulation_steps}"
             f"+lr-{cfg.learning_rate}"
         )
@@ -184,6 +121,7 @@ def get_run_id(cfg) -> str:
             run_id += f"+frozen+dropout-{cfg.lora_dropout}"
         if cfg.use_lora:
             run_id += f"+lora-r{cfg.lora_rank}+dropout-{cfg.lora_dropout}"
+        run_id += f"+seed{cfg.seed}"
         if cfg.image_aug:
             run_id += "--image_aug"
         if cfg.run_id_note is not None:
@@ -248,7 +186,7 @@ def count_parameters(module: nn.Module, name: str) -> None:
 def init_module(
     module_class: Type[nn.Module],
     module_name: str,
-    cfg: FinetuneConfig,
+    cfg: DictConfig,
     device_id: int,
     module_args: dict,
     to_bf16: bool = False,
@@ -260,7 +198,7 @@ def init_module(
     Args:
         module_class (Type[nn.Module]): Class of PyTorch module to initialize.
         module_name (str): Name of model component to load checkpoint for.
-        cfg (FinetuneConfig): Training configuration.
+        cfg (DictConfig): Training configuration.
         device_id (str): Device ID.
         module_args (dict): Args for initializing the module.
         to_bf16 (bool): Whether to convert to torch.bfloat16 data type.
@@ -509,7 +447,7 @@ def save_training_checkpoint(
     Save all training checkpoints including model components, LoRA adapter, and dataset statistics.
 
     Args:
-        cfg (FinetuneConfig): Training configuration.
+        cfg (DictConfig): Training configuration.
         run_dir (Path): Experiment run directory path.
         log_step (int): Current logging step.
         vla (OpenVLAForActionPrediction): Vision-language-action policy.
@@ -627,7 +565,7 @@ def run_validation(
         val_dataloader (DataLoader): Validation data loader.
         action_tokenizer (ActionTokenizer): Action tokenizer.
         device_id (str): Device ID.
-        cfg (FinetuneConfig): Training configuration.
+        cfg (DictConfig): Training configuration.
         num_patches (int): Number of vision patches.
         log_step (int): Current logging step.
         distributed_state (PartialState): Distributed training state.
@@ -686,8 +624,8 @@ def run_validation(
 
 
 
-@draccus.wrap()
-def finetune(cfg: FinetuneConfig) -> None:
+@hydra.main(version_base="1.2", config_path="configs", config_name="finetune")
+def finetune(cfg: DictConfig) -> None:
     """
     Fine-tunes base VLA on demonstration dataset via LoRA.
 
@@ -697,7 +635,7 @@ def finetune(cfg: FinetuneConfig) -> None:
     action chunking.
 
     Args:
-        cfg (FinetuneConfig): Training configuration.
+        cfg (DictConfig): Training configuration.
 
     Returns:
         None.
@@ -709,15 +647,26 @@ def finetune(cfg: FinetuneConfig) -> None:
         "Cannot do both L1 regression and diffusion. Please pick one of them!"
     )
 
+    # Set robot constants (action dim, chunk length, proprio dim, normalization) from the dataset config.
+    # Must happen before any module reads them.
+    set_constants(
+        action_dim=cfg.dataset.action_dim,
+        num_actions_chunk=cfg.dataset.num_actions_chunk,
+        proprio_dim=cfg.dataset.proprio_dim,
+        normalization_type=cfg.dataset.normalization_type,
+    )
+
+    OmegaConf.set_struct(cfg, False)  # Allow setting new attributes
     # Trim trailing forward slash ('/') in VLA path if it exists
     cfg.config_file_path = cfg.config_file_path.rstrip("/")
-    print(f"Fine-tuning OpenVLA Model `{cfg.config_file_path}` on `{cfg.dataset_name}`")
+    dataset_label = cfg.dataset.get("dataset_name", cfg.dataset.get("dataset_class", "unknown"))
+    print(f"Fine-tuning VLA-Adapter (`{cfg.config_file_path}`, VLM `{cfg.vlm_path}`) on `{dataset_label}`")
 
     # Get experiment run ID
     run_id = get_run_id(cfg)
 
     # Create experiment run directory
-    run_dir = cfg.run_root_dir / run_id
+    run_dir = Path(cfg.run_root_dir) / run_id
     os.makedirs(run_dir, exist_ok=True)
 
     # GPU setup
@@ -726,17 +675,34 @@ def finetune(cfg: FinetuneConfig) -> None:
     torch.cuda.set_device(device_id)
     torch.cuda.empty_cache()
 
+    # Seeding: same torch/numpy/random seed on every rank (consistent init); TF data pipeline (RLDS shuffle +
+    # augmentation) offset by rank so ranks stream different data.
+    import tensorflow as tf
+
+    set_global_seed(cfg.seed)
+    tf.random.set_seed(cfg.seed + distributed_state.process_index)
+
+    # Store checkpoint save path in config so it's visible on wandb
+    cfg.save_path = str(run_dir)
+
     # Initialize wandb logging
     if distributed_state.is_main_process:
-        wandb.init(project=cfg.wandb_project, name=f"ft+{run_id}", mode="offline")
+        wandb.init(
+            entity=cfg.wandb_entity,
+            project=cfg.wandb_project,
+            name=f"ft+{run_id}",
+            mode=cfg.get("wandb_mode", "online"),
+            settings=wandb.Settings(init_timeout=300),
+            config=OmegaConf.to_container(cfg, resolve=True),
+        )
 
     # Print detected constants
     print(
         "Detected constants:\n"
-        f"\tNUM_ACTIONS_CHUNK: {NUM_ACTIONS_CHUNK}\n"
-        f"\tACTION_DIM: {ACTION_DIM}\n"
-        f"\tPROPRIO_DIM: {PROPRIO_DIM}\n"
-        f"\tACTION_PROPRIO_NORMALIZATION_TYPE: {ACTION_PROPRIO_NORMALIZATION_TYPE}"
+        f"\tNUM_ACTIONS_CHUNK: {C.NUM_ACTIONS_CHUNK}\n"
+        f"\tACTION_DIM: {C.ACTION_DIM}\n"
+        f"\tPROPRIO_DIM: {C.PROPRIO_DIM}\n"
+        f"\tACTION_PROPRIO_NORMALIZATION_TYPE: {C.ACTION_PROPRIO_NORMALIZATION_TYPE}"
     )
 
     # Two options:
@@ -774,7 +740,16 @@ def finetune(cfg: FinetuneConfig) -> None:
     AutoProcessor.register(OpenVLAConfig, PrismaticProcessor)
     processor = AutoProcessor.from_pretrained(cfg.config_file_path, trust_remote_code=True)
 
-    if cfg.use_minivlm:
+    if cfg.resume:
+        # Resume: load the merged VLA (base VLM + previously merged LoRA + action_queries) saved in the checkpoint dir.
+        # A fresh LoRA is applied on top below, exactly like OpenVLA-OFT resume. Non-VLA modules (action head,
+        # proprio projector) are loaded from the same dir in init_module().
+        vla = AutoModelForVision2Seq.from_pretrained(
+            cfg.resum_vla_path, torch_dtype=torch.bfloat16, low_cpu_mem_usage=False, trust_remote_code=False
+        ).to(device_id)
+        # Used as the base weights when merging LoRA at the next checkpoint save
+        RAW_STATE_DICT = {k: v.cpu() for k, v in vla.state_dict().items()}
+    elif cfg.use_minivlm:
         hf_token = ''
         if 'prism-qwen25-extra-dinosiglip-224px-0_5b' in cfg.vlm_path:
             
@@ -824,8 +799,10 @@ def finetune(cfg: FinetuneConfig) -> None:
             trust_remote_code=False,
             ).to(device_id)
 
-    # Set number of images in VLA input
-    vla.vision_backbone.set_num_images_in_input(cfg.num_images_in_input)
+    # Set number of images in VLA input (dataset config's num_views wins over the top-level default)
+    num_images_in_input = cfg.dataset.get("num_views", cfg.num_images_in_input)
+    cfg.num_images_in_input = num_images_in_input
+    vla.vision_backbone.set_num_images_in_input(num_images_in_input)
 
     # vla.set_version(cfg.version)
 
@@ -861,7 +838,7 @@ def finetune(cfg: FinetuneConfig) -> None:
         )
         count_parameters(vla.vision_backbone, "vla.vision_backbone (post-wrap)")
         if cfg.resume:
-            state_dict = load_checkpoint("vision_backbone", cfg.config_file_path, cfg.resume_step)
+            state_dict = load_checkpoint("vision_backbone", cfg.resum_vla_path, cfg.resume_step)
             vla.model.vision_backbone.load_state_dict(state_dict)
         vla.model.vision_backbone = vla.model.vision_backbone.to(device_id)
 
@@ -875,7 +852,7 @@ def finetune(cfg: FinetuneConfig) -> None:
             "proprio_projector",
             cfg,
             device_id,
-            {"llm_dim": vla.module.llm_dim, "proprio_dim": PROPRIO_DIM},
+            {"llm_dim": vla.module.llm_dim, "proprio_dim": C.PROPRIO_DIM},
             to_bf16=True,
         )
 
@@ -889,7 +866,7 @@ def finetune(cfg: FinetuneConfig) -> None:
         {
             "input_dim": vla.module.llm_dim, 
             "hidden_dim": vla.module.llm_dim, 
-            "action_dim": ACTION_DIM,
+            "action_dim": C.ACTION_DIM,
             "use_pro_version": cfg.use_pro_version,
             },
         to_bf16=True,
@@ -929,79 +906,135 @@ def finetune(cfg: FinetuneConfig) -> None:
     # Create Action Tokenizer
     action_tokenizer = ActionTokenizer(processor.tokenizer)
 
-    # Load Fine-tuning Dataset =>> note that we use an RLDS-formatted dataset following Open X-Embodiment by default.
-    #   =>> If you want to use a non-RLDS dataset (e.g., a standard PyTorch Dataset) see the following commented block.
-    #   =>> Note that our training code does not loop over epochs because the RLDS loader does this implicitly; if using
-    #       your own Dataset, make sure to add the appropriate logic to the training loop!
-    #
-    # ---
-    # from prismatic.vla.datasets import DummyDataset
-    #
-    # train_dataset = DummyDataset(
-    #     action_tokenizer,
-    #     processor.tokenizer,
-    #     image_transform=processor.image_processor.apply_transform,
-    #     prompt_builder_fn=PurePromptBuilder,
-    # )
-    # ---
-
     # We assume that the model takes as input one third-person camera image and 1 or 2 optional wrist camera image(s)
-    use_wrist_image = cfg.num_images_in_input > 1
+    use_wrist_image = num_images_in_input > 1
 
-    # Create training and optional validation datasets
-    batch_transform = RLDSBatchTransform(
-        action_tokenizer,
-        processor.tokenizer,
-        image_transform=processor.image_processor.apply_transform,
-        prompt_builder_fn=PurePromptBuilder,
-        use_wrist_image=use_wrist_image,
-        use_proprio=cfg.use_proprio,
-        use_minivlm=cfg.use_minivlm
-        )
-    train_dataset = RLDSDataset(
-        cfg.data_root_dir,
-        cfg.dataset_name,
-        batch_transform,
-        resize_resolution=tuple(vla.module.config.image_sizes),
-        shuffle_buffer_size=cfg.shuffle_buffer_size,
-        image_aug=cfg.image_aug,
-    )
-    if cfg.use_val_set:
-        val_dataset = RLDSDataset(
-            cfg.data_root_dir,
-            cfg.dataset_name,
-            batch_transform,
-            resize_resolution=tuple(vla.module.config.image_sizes),
-            shuffle_buffer_size=cfg.shuffle_buffer_size // 10,
-            image_aug=cfg.image_aug,
-            train=False,
-        )
-
-    # [Important] Save dataset statistics so that we can unnormalize actions during inference
-    if distributed_state.is_main_process:
-        save_dataset_statistics(train_dataset.dataset_statistics, run_dir)
-
-    # Create collator and dataloader
+    # Collator (shared by all dataset types)
     collator = PaddedCollatorForActionPrediction(
         processor.tokenizer.model_max_length, processor.tokenizer.pad_token_id, padding_side="right"
     )
-    dataloader = DataLoader(
-        train_dataset,
-        batch_size=cfg.batch_size,
-        sampler=None,
-        collate_fn=collator,
-        num_workers=0,  # Important: Set to 0 if using RLDS, which uses its own parallelism
-    )
-    print('Len of dataloader: ', len(dataloader))
-    if cfg.use_val_set:
-        val_batch_size = cfg.batch_size
-        val_dataloader = DataLoader(
-            val_dataset,
-            batch_size=val_batch_size,
+
+    # ============================================================
+    # Dataset loading: branch on dataset type (rlds vs patch_policy)
+    # ============================================================
+    val_dataloader = None
+    if cfg.dataset.type == "rlds":
+        # --- RLDS dataset path (original VLA-Adapter behavior) ---
+        batch_transform = RLDSBatchTransform(
+            action_tokenizer,
+            processor.tokenizer,
+            image_transform=processor.image_processor.apply_transform,
+            prompt_builder_fn=PurePromptBuilder,
+            use_wrist_image=use_wrist_image,
+            use_proprio=cfg.use_proprio,
+            use_minivlm=cfg.use_minivlm,
+        )
+        train_dataset = RLDSDataset(
+            cfg.dataset.data_root_dir,
+            cfg.dataset.dataset_name,
+            batch_transform,
+            resize_resolution=tuple(vla.module.config.image_sizes),
+            shuffle_buffer_size=cfg.dataset.shuffle_buffer_size,
+            image_aug=cfg.image_aug,
+        )
+        dataloader = DataLoader(
+            train_dataset,
+            batch_size=cfg.batch_size,
             sampler=None,
             collate_fn=collator,
             num_workers=0,  # Important: Set to 0 if using RLDS, which uses its own parallelism
         )
+        if cfg.use_val_set:
+            val_dataset = RLDSDataset(
+                cfg.dataset.data_root_dir,
+                cfg.dataset.dataset_name,
+                batch_transform,
+                resize_resolution=tuple(vla.module.config.image_sizes),
+                shuffle_buffer_size=cfg.dataset.shuffle_buffer_size // 10,
+                image_aug=cfg.image_aug,
+                train=False,
+            )
+            val_dataloader = DataLoader(
+                val_dataset, batch_size=cfg.batch_size, sampler=None, collate_fn=collator, num_workers=0
+            )
+
+    elif cfg.dataset.type == "patch_policy":
+        # --- patch_policy TrajectoryDataset path (PushT / BlockPush / Cube / LIBERO-Goal, torch .pth/.npy files) ---
+        from prismatic.vla.datasets.trajectory import (
+            CubeDataset,
+            FactrPickleDataset,
+            LiberoGoalDataset,
+            PushMultiviewTrajectoryDataset,
+            PushTDataset,
+        )
+
+        DATASET_CLASS_MAP = {
+            "block_pushing.PushMultiviewTrajectoryDataset": PushMultiviewTrajectoryDataset,
+            "cube.CubeDataset": CubeDataset,
+            "factr_pickle.FactrPickleDataset": FactrPickleDataset,
+            "libero.LiberoGoalDataset": LiberoGoalDataset,
+            "pusht.PushTDataset": PushTDataset,
+        }
+        DatasetClass = DATASET_CLASS_MAP[cfg.dataset.dataset_class]
+
+        # Dataset-specific kwargs (only forwarded when set in the yaml)
+        ds_kwargs = {"data_directory": cfg.dataset.data_directory}
+        for key in ("subset_fraction", "prefetch", "onehot_goals", "relative"):
+            if cfg.dataset.get(key) is not None:
+                ds_kwargs[key] = cfg.dataset[key]
+        if cfg.dataset.get("image_topics") is not None:
+            ds_kwargs["image_topics"] = list(cfg.dataset.image_topics)
+
+        traj_dataset = DatasetClass(**ds_kwargs)
+
+        # Slice into windows and split train/val (seeded)
+        train_sliced, val_sliced = get_train_val_sliced(
+            traj_dataset,
+            train_fraction=cfg.dataset.train_fraction,
+            random_seed=cfg.seed,
+            window_size=cfg.dataset.window_size,
+        )
+
+        dataset_name = cfg.dataset.dataset_class.split(".")[0]
+        adapter_kwargs = dict(
+            action_tokenizer=action_tokenizer,
+            base_tokenizer=processor.tokenizer,
+            image_transform=processor.image_processor.apply_transform,
+            prompt_builder_fn=PurePromptBuilder,
+            language_instruction=cfg.dataset.language_instruction,
+            num_actions_chunk=cfg.dataset.num_actions_chunk,
+            action_dim=cfg.dataset.action_dim,
+            use_wrist_image=use_wrist_image,
+            use_proprio=cfg.use_proprio,
+            dataset_name=dataset_name,
+            use_minivlm=cfg.use_minivlm,
+        )
+        train_dataset = PatchPolicyVLADataset(trajectory_slicer_dataset=train_sliced, **adapter_kwargs)
+
+        # Map-style dataset is finite -> wrap so the step-based loop below can run indefinitely
+        sampler = DistributedSampler(train_dataset, seed=cfg.seed) if dist.is_initialized() and dist.get_world_size() > 1 else None
+        raw_loader = DataLoader(
+            train_dataset,
+            batch_size=cfg.batch_size,
+            sampler=sampler,
+            collate_fn=collator,
+            num_workers=cfg.dataset.get("num_workers", 4),
+            shuffle=(sampler is None),
+            drop_last=True,
+        )
+        dataloader = InfiniteDataLoader(raw_loader)
+
+        if cfg.use_val_set:
+            val_dataset = PatchPolicyVLADataset(trajectory_slicer_dataset=val_sliced, **adapter_kwargs)
+            val_dataloader = DataLoader(
+                val_dataset, batch_size=cfg.batch_size, sampler=None, collate_fn=collator, num_workers=4
+            )
+    else:
+        raise ValueError(f"Unknown dataset type: {cfg.dataset.type}. Must be 'rlds' or 'patch_policy'.")
+
+    # [Important] Save dataset statistics so that we can unnormalize actions during inference
+    if distributed_state.is_main_process:
+        save_dataset_statistics(train_dataset.dataset_statistics, run_dir)
 
     # Deque to store recent train metrics (used for computing smoothened metrics for gradient accumulation)
     recent_metrics = {

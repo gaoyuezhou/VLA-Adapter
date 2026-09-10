@@ -1,5 +1,6 @@
 """Utils for evaluating robot policies in various environments."""
 
+import prismatic.vla.constants as C
 import os
 import random
 import time
@@ -14,7 +15,7 @@ from experiments.robot.openvla_utils import (
 )
 
 # Initialize important constants
-ACTION_DIM = 7
+C.ACTION_DIM = 7
 DATE = time.strftime("%Y_%m_%d")
 DATE_TIME = time.strftime("%Y_%m_%d-%H_%M_%S")
 DEVICE = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
